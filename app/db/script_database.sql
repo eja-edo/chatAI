@@ -22,7 +22,8 @@ CREATE TABLE chat_sessions (
     user_id UUID REFERENCES users(id) ON DELETE SET NULL,
 	summary JSONB,
     started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    ended_at TIMESTAMP
+    ended_at TIMESTAMP,
+    title text
 );
 
 -- Table: messages
