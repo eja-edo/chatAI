@@ -1,5 +1,6 @@
 from sqlalchemy import Column, String, TIMESTAMP, text
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
 import uuid
 from app.db.base import Base
 
@@ -12,3 +13,5 @@ class User(Base):
     email = Column(String, nullable=False, unique=True)
     hash_password = Column(String, nullable=False)
     created_at = Column(TIMESTAMP, server_default=text('CURRENT_TIMESTAMP'))
+
+    session = relationship("ChatSession", back_populates="owner")
