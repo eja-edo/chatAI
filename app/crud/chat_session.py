@@ -1,12 +1,12 @@
+from fastapi.websockets import WebSocketState
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.schemas.chat_session import ChatSessionCreate, ChatSessionOut
 from app.schemas.message import MessageCreate
 from app.api.deps import get_db
 from fastapi import HTTPException, status, WebSocket, WebSocketDisconnect
 from app.models.chat_session import ChatSession
 from app.models.message import Message
 from app.models.user import User
-from app.core.security import get_current_user, get_ws_current_user
+from app.core.security import get_ws_current_user
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import select
 from app.chatbot.memory import get_session_memory
@@ -71,16 +71,16 @@ async def websocket_chat(websocket : WebSocket, session_id : UUID):
             # Generate bot response
             try:
                 response_chunks = []
-                async for rep_chunk in get_llm_response([
-                    HumanMessage(content=history),
-                    HumanMessage(content=user_text)
-                ]):
+                async for rep_chunk in get_llm_response(history, user_text):
+                   if websocket.client_state != WebSocketState.CONNECTED:
+                        break
                    await websocket.send_text(rep_chunk.content)
                    response_chunks.append(rep_chunk.content)
 
                 full_response = "".join(response_chunks)
             except Exception as e:
-                await websocket.send_json({"error": f"LLM error: {str(e)}"})
+                if websocket.client_state == WebSocketState.CONNECTED:
+                    await websocket.send_json({"error": f"LLM error: {str(e)}"})
                 continue
 
             # Save both messages
@@ -94,10 +94,14 @@ async def websocket_chat(websocket : WebSocket, session_id : UUID):
             chat_session.summary = {"text": memory.summary}
             await db.commit()
 
-            # Broadcast to all active clients in this session
-            for conn in active_connections[session_id]:
-                await conn.send_json({"from": "user", "text": user_text})
-                await conn.send_json({"from": "bot", "text": full_response})
+            disconnected = [
+                conn for conn in active_connections[session_id]
+                if conn.client_state != WebSocketState.CONNECTED
+            ]
+            # Clean up any disconnected clients
+            for conn in disconnected:
+                if conn in active_connections[session_id]:
+                    active_connections[session_id].remove(conn)
 
     except WebSocketDisconnect:
         active_connections[session_id].remove(websocket)
@@ -181,8 +185,6 @@ async def get_sessions(db: AsyncSession, current_user: User):
         stmt = select(ChatSession).where(ChatSession.user_id == current_user.id).order_by(ChatSession.started_at.desc())
         results = await db.execute(stmt)
         sessions = results.scalars().all()
-        if not sessions:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No session was found")
         
         return sessions
     
@@ -221,8 +223,6 @@ async def get_all_messages(session_id : UUID,
         result = await db.execute(stmt)
         messages = result.scalars().all()
 
-        if not messages:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Message Not Found: {e}")
         return messages
     except SQLAlchemyError as e:
         await db.rollback()
